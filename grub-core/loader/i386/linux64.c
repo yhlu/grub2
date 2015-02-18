@@ -61,6 +61,7 @@ static struct grub_relocator *relocator = NULL;
 static grub_size_t maximal_cmdline_size;
 static struct linux_kernel_params linux_params;
 static char *linux_cmdline;
+static grub_uint64_t load_mem_max = -1ULL;
 
 /* 2M aligned buffer */
 static grub_uint8_t buf[1<<21] __attribute__ ((aligned(1<<21)));
@@ -139,7 +140,7 @@ allocate_pages (grub_size_t prot_size, grub_size_t *align,
     }
 
   /* allocate high at first */
-  addr = grub_alloc_high((1ULL<<32), -1ULL, prot_size, min_align);
+  addr = grub_alloc_high((1ULL<<32), load_mem_max, prot_size, min_align);
   if (addr != 0)
     {
       prot_mode_mem = NULL;
@@ -768,7 +769,7 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 
   /* allocate high at first */
   if (prot_mode_mem)
-    addr_high = grub_alloc_high(1ULL<<32, -1ULL, size, 21);
+    addr_high = grub_alloc_high(1ULL<<32, load_mem_max, size, 21);
   else if (prot_mode_target > ((1ULL<<32) + size))
     addr_high = grub_alloc_high(1ULL<<32, prot_mode_target, size, 21);
 
@@ -808,10 +809,31 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
-static grub_command_t cmd_linux, cmd_initrd;
+static grub_err_t
+grub_cmd_load_mem_max (grub_command_t cmd __attribute__ ((unused)),
+                 int argc, char *argv[])
+{
+  if (argc == 0)
+    {
+      grub_printf("load_mem_max = %llx\n", load_mem_max);
+      return 0;
+    }
+
+   load_mem_max = grub_strtoull(argv[0], NULL, 0);
+
+   if (load_mem_max < (1ULL<<32))
+     load_mem_max = 1ULL<<32;
+
+   return 0;
+}
+
+static grub_command_t cmd_linux, cmd_initrd, cmd_load_mem_max;
 
 GRUB_MOD_INIT(linux)
 {
+  cmd_load_mem_max = grub_register_command("loadmemmax64",
+                                           grub_cmd_load_mem_max,
+                                           0, N_("Set load_mem_max."));
   cmd_linux = grub_register_command ("linux64", grub_cmd_linux,
 				     0, N_("Load Linux."));
   cmd_initrd = grub_register_command ("initrd64", grub_cmd_initrd,
@@ -821,6 +843,7 @@ GRUB_MOD_INIT(linux)
 
 GRUB_MOD_FINI(linux)
 {
+  grub_unregister_command (cmd_load_mem_max);
   grub_unregister_command (cmd_linux);
   grub_unregister_command (cmd_initrd);
 }
