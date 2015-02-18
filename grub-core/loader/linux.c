@@ -292,3 +292,94 @@ grub_initrd_load (struct grub_linux_initrd_context *initrd_ctx,
   root = 0;
   return GRUB_ERR_NONE;
 }
+
+#ifndef GRUB_MACHINE_EFI
+grub_err_t
+grub_initrd_load_copy (struct grub_linux_initrd_context *initrd_ctx,
+                       char *argv[], grub_uint64_t target,
+                       void * (*map_func) (unsigned long) , void *buf)
+{
+  int i;
+  int newc = 0;
+  struct dir *root = 0;
+  grub_uint64_t offset = 0;
+  grub_uint8_t *p, *p_orig, *ptr_target;
+
+  for (i = 0; i < initrd_ctx->nfiles; i++)
+    {
+      grub_int64_t cursize;
+
+      if (initrd_ctx->components[i].newc_name)
+        {
+          p = p_orig = buf;
+          p += insert_dir (initrd_ctx->components[i].newc_name,
+                             &root, p);
+          p = make_header (p, initrd_ctx->components[i].newc_name,
+                             grub_strlen (initrd_ctx->components[i].newc_name),
+                             0100777,
+                             initrd_ctx->components[i].size);
+          ptr_target = (grub_uint8_t *)((grub_uint32_t)map_func((target + offset)>>21) + (grub_uint32_t)((target + offset) & ((1<<21) - 1)));
+          memcpy(ptr_target, p_orig, p - p_orig);
+          offset += p - p_orig;
+          newc = 1;
+        }
+      else if (newc)
+        {
+          p = p_orig = buf;
+          p = make_header (p, "TRAILER!!!", sizeof ("TRAILER!!!") - 1,
+                             0, 0);
+          ptr_target = (grub_uint8_t *)((grub_uint32_t)map_func((target + offset)>>21) + (grub_uint32_t)((target + offset) & ((1<<21) - 1)));
+          memcpy(ptr_target, p_orig, p - p_orig);
+          offset += p - p_orig;
+          free_dir (root);
+          root = 0;
+          newc = 0;
+        }
+
+      cursize = initrd_ctx->components[i].size;
+      while (cursize > 0)
+        {
+          grub_uint64_t size_read = cursize;
+
+          if (size_read > (1<<21))
+            size_read = 1<<21;
+
+	  p = buf;
+	  map_func(0);
+          if (grub_file_read (initrd_ctx->components[i].file, p, size_read)
+              != (grub_ssize_t) size_read)
+            {
+              if (!grub_errno)
+                grub_error (GRUB_ERR_FILE_READ_ERROR, N_("premature end of file %s"),
+                            argv[i]);
+              grub_initrd_close (initrd_ctx);
+              return grub_errno;
+            }
+
+          ptr_target = (grub_uint8_t *)((grub_uint32_t)map_func((target + offset)>>21) + (grub_uint32_t)((target + offset) & ((1<<21) - 1)));
+          memcpy(ptr_target, p, size_read);
+          offset += size_read;
+          cursize -= size_read;
+        }
+
+      cursize = initrd_ctx->components[i].size;
+      ptr_target = (grub_uint8_t *)((grub_uint32_t)map_func((target + offset)>>21) + (grub_uint32_t)((target + offset) & ((1<<21) - 1)));
+      grub_memset (ptr_target, 0, ALIGN_UP_OVERHEAD (cursize, 4));
+      offset += ALIGN_UP_OVERHEAD (cursize, 4);
+    }
+
+  if (newc) {
+    p = p_orig = buf;
+    p = make_header (p, "TRAILER!!!", sizeof ("TRAILER!!!") - 1, 0, 0);
+    ptr_target = (grub_uint8_t *)((grub_uint32_t)map_func((target + offset)>>21) + (grub_uint32_t)((target + offset) & ((1<<21) - 1)));
+    memcpy(ptr_target, p_orig, p - p_orig);
+    offset += p - p_orig;
+  }
+
+  map_func(0);
+
+  free_dir (root);
+  root = 0;
+  return GRUB_ERR_NONE;
+}
+#endif
