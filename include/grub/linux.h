@@ -6,14 +6,14 @@ struct grub_linux_initrd_context
 {
   int nfiles;
   struct grub_linux_initrd_component *components;
-  grub_size_t size;
+  grub_off_t size;
 };
 
 grub_err_t
 grub_initrd_init (int argc, char *argv[],
 		  struct grub_linux_initrd_context *ctx);
 
-grub_size_t
+grub_off_t
 grub_get_initrd_size (struct grub_linux_initrd_context *ctx);
 
 void
