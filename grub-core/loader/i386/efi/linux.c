@@ -108,6 +108,8 @@ static grub_err_t
 grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
                  int argc, char *argv[])
 {
+  grub_uint64_t addr_max = 0x3fffffff;
+  int load_high = 0;
   grub_file_t *files = 0;
   int i, nfiles = 0;
   grub_size_t size = 0;
@@ -139,7 +141,14 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
       size += ALIGN_UP (grub_file_size (files[i]), 4);
     }
 
-  initrd_mem = grub_efi_allocate_pages_max (0x3fffffff, BYTES_TO_PAGES(size));
+  if (params->version > grub_cpu_to_le16 (0x020b) &&
+      params->xloadflags & (1<<1)) /* XLF_CAN_BE_LOADED_ABOVE_4G */
+    {
+      addr_max = -1UL;
+      load_high = 1;
+    }
+
+  initrd_mem = grub2_efi_allocate_pages_high (addr_max, BYTES_TO_PAGES(size), 4096);
 
   if (!initrd_mem)
     {
@@ -147,8 +156,13 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
       goto fail;
     }
 
-  params->ramdisk_size = size;
+  params->ramdisk_size = (grub_uint32_t) size;
   params->ramdisk_image = (grub_uint32_t)(grub_uint64_t) initrd_mem;
+  if ( load_high )
+    {
+      params->ext_ramdisk_image = (grub_uint64_t) initrd_mem >> 32;
+      params->ext_ramdisk_size = size >> 32;
+    }
 
   ptr = initrd_mem;
 
@@ -166,8 +180,6 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
       grub_memset (ptr, 0, ALIGN_UP_OVERHEAD (cursize, 4));
       ptr += ALIGN_UP_OVERHEAD (cursize, 4);
     }
-
-  params->ramdisk_size = size;
 
  fail:
   for (i = 0; i < nfiles; i++)
