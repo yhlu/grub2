@@ -1616,6 +1616,16 @@ module = {
 };
 
 module = {
+  name = linux64;
+  i386_pc = loader/i386/linux64.c;
+  i386_pc = lib/i386/pc/vesa_modes_table.c;
+  common = loader/linux.c;
+  common = lib/cmdline.c;
+  enable = noemu;
+  enable = i386_pc;
+};
+
+module = {
   name = ntldr;
   i386_pc = loader/i386/pc/ntldr.c;
   enable = i386_pc;
