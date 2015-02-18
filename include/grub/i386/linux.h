@@ -130,7 +130,7 @@ struct linux_kernel_header
   grub_uint32_t kernel_alignment;
   grub_uint8_t relocatable;
   grub_uint8_t min_alignment;
-  grub_uint8_t pad[2];
+  grub_uint16_t xloadflags;
   grub_uint32_t cmdline_size;
   grub_uint32_t hardware_subarch;
   grub_uint64_t hardware_subarch_data;
@@ -221,7 +221,11 @@ struct linux_kernel_params
   grub_uint32_t ofw_cif_handler;	/* b8 */
   grub_uint32_t ofw_idt;		/* bc */
 
-  grub_uint8_t padding7[0x1b8 - 0xc0];
+  grub_uint32_t ext_ramdisk_image;	/* c0 */
+  grub_uint32_t ext_ramdisk_size;	/* c4 */
+  grub_uint32_t ext_cmd_line_ptr;	/* c8 */
+
+  grub_uint8_t padding7[0x1b8 - 0xcc];
 
   union
     {
@@ -300,14 +304,18 @@ struct linux_kernel_params
   grub_uint32_t initrd_addr_max;	/* Maximum initrd address */
   grub_uint32_t kernel_alignment;	/* Alignment of the kernel */
   grub_uint8_t relocatable_kernel;	/* Is the kernel relocatable */
-  grub_uint8_t pad1[3];
+  grub_uint8_t min_alignment;
+  grub_uint16_t xloadflags;
   grub_uint32_t cmdline_size;		/* Size of the kernel command line */
   grub_uint32_t hardware_subarch;
   grub_uint64_t hardware_subarch_data;
   grub_uint32_t payload_offset;
   grub_uint32_t payload_length;
   grub_uint64_t setup_data;
-  grub_uint8_t pad2[120];		/* 258 */
+  grub_uint64_t pref_address;
+  grub_uint32_t init_size;
+  grub_uint32_t handover_offset;
+  grub_uint8_t pad2[104];		/* 248 */
   struct grub_e820_mmap e820_map[(0x400 - 0x2d0) / 20];	/* 2d0 */
 
 } GRUB_PACKED;
