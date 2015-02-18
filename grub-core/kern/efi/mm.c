@@ -557,3 +557,147 @@ grub_efi_mm_init (void)
   grub_efi_free_pages ((grub_addr_t) memory_map,
 		       2 * BYTES_TO_PAGES (MEMORY_MAP_SIZE));
 }
+
+#define EFI_PAGE_SIZE 0x1000
+static grub_efi_status_t grub2_efi_get_memory_map(grub_efi_uintn_t *map_size,
+                         grub_efi_memory_descriptor_t **map,
+                         grub_efi_uintn_t *key_ptr,
+                         grub_efi_uintn_t *desc_size,
+                         grub_efi_uint32_t *desc_ver)
+{
+  grub_efi_memory_descriptor_t *m = NULL;
+  grub_efi_status_t status;
+  grub_efi_uintn_t key;
+  grub_efi_uint32_t desc_version;
+  grub_efi_boot_services_t *b;
+
+  b = grub_efi_system_table->boot_services;
+
+  *map_size = 0;
+  *desc_size = 0;
+  key = 0;
+  status = efi_call_5 (b->get_memory_map, map_size, NULL, &key,
+                       desc_size, &desc_version);
+
+  if (status != GRUB_EFI_BUFFER_TOO_SMALL)
+    return GRUB_EFI_LOAD_ERROR;
+
+  /*
+   * Add an additional efi_memory_desc_t because we're doing an
+   * allocation which may be in a new descriptor region.
+   */
+  *map_size += *desc_size;
+  status = efi_call_3 (b->allocate_pool, GRUB_EFI_LOADER_DATA,
+                       *map_size, (void **)&m);
+  if (status != GRUB_EFI_SUCCESS)
+    goto fail;
+
+  status = efi_call_5 (b->get_memory_map, map_size, m, &key,
+                       desc_size, &desc_version);
+  if (status == GRUB_EFI_BUFFER_TOO_SMALL)
+    {
+      efi_call_1 (b->free_pool, m);
+      return GRUB_EFI_LOAD_ERROR;
+    }
+
+  if (status != GRUB_EFI_SUCCESS)
+    efi_call_1 (b->free_pool, m);
+
+  if (key_ptr && status == GRUB_EFI_SUCCESS)
+    *key_ptr = key;
+  if (desc_ver && status == GRUB_EFI_SUCCESS)
+    *desc_ver = desc_version;
+
+fail:
+  *map = m;
+  return status;
+}
+
+/*
+ * Allocate at the highest possible address that is not above 'max'.
+ */
+void *grub2_efi_allocate_pages_high(grub_efi_physical_address_t max,
+			    grub_efi_uint64_t pages, grub_efi_uint64_t align)
+{
+  grub_efi_boot_services_t *b;
+  grub_efi_uintn_t map_size, desc_size;
+  grub_efi_memory_descriptor_t *map= NULL;
+  grub_efi_status_t status;
+  grub_uint64_t max_addr = 0;
+  grub_uint64_t addr = 0;
+  grub_efi_uintn_t i;
+  grub_uint64_t size = PAGES_TO_BYTES(pages);
+
+  /* Obtain descriptors for available memory.  */
+  status = grub2_efi_get_memory_map (&map_size, &map, 0, &desc_size, 0);
+  if (status != GRUB_EFI_SUCCESS)
+	goto fail;
+
+  if (align < EFI_PAGE_SIZE)
+    align = EFI_PAGE_SIZE;
+
+  b = grub_efi_system_table->boot_services;
+
+again:
+  for (i = 0; i < map_size / desc_size; i++)
+    {
+      grub_efi_memory_descriptor_t *desc;
+      unsigned long m = (unsigned long)map;
+      grub_uint64_t start, end;
+
+      desc = (grub_efi_memory_descriptor_t *)(m + (i * desc_size));
+      if (desc->type != GRUB_EFI_CONVENTIONAL_MEMORY)
+        continue;
+
+      if (desc->num_pages < pages)
+        continue;
+
+      start = desc->physical_start;
+      end = start + PAGES_TO_BYTES(desc->num_pages);
+
+      if (end > max)
+        end = max;
+
+      if ((start + size) > end)
+        continue;
+
+      if ((((end - size)/align)*align) < start)
+        continue;
+
+      start = (((end - size)/align)*align);
+
+      /*
+       * Don't allocate at 0x0. It will confuse code that
+       * checks pointers against NULL.
+       */
+      if (start == 0x0)
+        continue;
+
+      if (start > max_addr)
+        max_addr = start;
+    }
+
+  if (!max_addr)
+    addr = 0;
+  else
+    {
+      status = efi_call_4 (b->allocate_pages,
+                           GRUB_EFI_ALLOCATE_ADDRESS, GRUB_EFI_LOADER_DATA,
+                           pages, &max_addr);
+      if (status != GRUB_EFI_SUCCESS)
+        {
+          max = max_addr;
+          max_addr = 0;
+          goto again;
+        }
+
+      addr = max_addr;
+    }
+
+  /* Release the memory maps.  */
+  efi_call_1 (b->free_pool, map);
+
+fail:
+  return (void *)((grub_addr_t) addr);
+}
+
