@@ -418,14 +418,14 @@ static grub_command_t cmd_linux, cmd_initrd, cmd_load_mem_max;
 GRUB_MOD_INIT(linuxefi)
 {
   cmd_load_mem_max =
-    grub_register_command("loadmemmaxefi", grub_cmd_load_mem_max,
+    grub_register_command("loadmemmax64", grub_cmd_load_mem_max,
                           0, N_("Set load_mem_max."));
 
   cmd_linux =
-    grub_register_command ("linuxefi", grub_cmd_linux,
+    grub_register_command ("linux64", grub_cmd_linux,
                            0, N_("Load Linux."));
   cmd_initrd =
-    grub_register_command ("initrdefi", grub_cmd_initrd,
+    grub_register_command ("initrd64", grub_cmd_initrd,
                            0, N_("Load initrd."));
   my_mod = mod;
 }
