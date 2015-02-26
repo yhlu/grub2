@@ -91,6 +91,8 @@ static grub_uint64_t load_mem_max = -1ULL;
 static grub_uint8_t map_buf[1<<21] __attribute__ ((aligned(1<<21)));
 #include "linux64_map.c"
 #include "linux64_alloc.c"
+#else
+#define BYTES_TO_PAGES(bytes)   (((bytes) + 0xfff) >> 12)
 #endif
 
 /* FIXME */
@@ -1243,9 +1245,9 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 
   initrd_pages = (page_align (size) >> 12);
 
-#ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+#ifndef GRUB_MACHINE_EFI
       grub_uint64_t addr_high = 0;
 
       /* allocate high at first */
@@ -1277,6 +1279,15 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
           if (grub_initrd_load (&initrd_ctx, argv, initrd_mem))
             goto fail;
         }
+#else
+      initrd_mem = grub2_efi_allocate_pages_high (load_mem_max, BYTES_TO_PAGES(size), 4096);
+      initrd_mem_target = (grub_uint64_t) initrd_mem;
+      if (grub_initrd_load (&initrd_ctx, argv, initrd_mem))
+        {
+          grub_efi_free_pages(initrd_mem_target, BYTES_TO_PAGES(size));
+          goto fail;
+        }
+#endif
 
 #ifdef GRUB_DEBUG_64BIT
       grub_printf ("Initrd: [%llx, %llx]\n",
@@ -1286,7 +1297,6 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 
      goto done;
     }
-#endif
 
   /* Get the highest address available for the initrd.  */
   if (grub_le_to_cpu16 (linux_params.version) >= 0x0203)
@@ -1340,14 +1350,12 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   grub_dprintf ("linux", "Initrd, addr=0x%x, size=0x%x\n",
 		(unsigned) addr, (unsigned) size);
 
-#ifndef GRUB_MACHINE_EFI
  done:
   if (load_high)
     {
       linux_params.ext_ramdisk_image = (grub_uint32_t) (initrd_mem_target >> 32);
       linux_params.ext_ramdisk_size = (grub_uint32_t) (size >> 32);
     }
-#endif
   linux_params.ramdisk_image = (grub_uint32_t) initrd_mem_target;
   linux_params.ramdisk_size = (grub_uint32_t) size;
   linux_params.root_dev = 0x0100; /* XXX */
