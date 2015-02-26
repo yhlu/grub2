@@ -60,6 +60,8 @@ GRUB_MOD_LICENSE ("GPLv3+");
 #define ACCEPTS_PURE_TEXT 1
 #endif
 
+#define GRUB_DEBUG_64BIT 1
+
 static grub_dl_t my_mod;
 
 static grub_size_t linux_mem_size;
@@ -635,6 +637,16 @@ grub_linux_boot (void)
            real_mode_mem = get_virtual_current_address (ch);
            ctx.real_mode_target = get_physical_target_address (ch);
          }
+
+#ifdef GRUB_DEBUG_64BIT
+       grub_printf("params: [%llx, %llx]\n",
+             (unsigned long long)ctx.real_mode_target,
+             (unsigned long long)ctx.real_mode_target + cl_offset - 1);
+
+       grub_printf("cmdline: [%llx, %llx]\n",
+             (unsigned long long)ctx.real_mode_target + cl_offset,
+             (unsigned long long)ctx.real_mode_target + ctx.real_size - 1);
+#endif
      }
 #endif
 
@@ -1172,6 +1184,13 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
         }
       map_2M_page(0);
     }
+
+#ifdef GRUB_DEBUG_64BIT
+  grub_printf ("kernel: [%llx, %llx]\n",
+                (unsigned long long) prot_mode_target,
+                (unsigned long long) (prot_mode_target + prot_init_space - 1));
+#endif
+
 #endif
 
   if (grub_errno == GRUB_ERR_NONE)
@@ -1258,6 +1277,12 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
           if (grub_initrd_load (&initrd_ctx, argv, initrd_mem))
             goto fail;
         }
+
+#ifdef GRUB_DEBUG_64BIT
+      grub_printf ("Initrd: [%llx, %llx]\n",
+                   (unsigned long long) initrd_mem_target,
+                   (unsigned long long) (initrd_mem_target + size - 1));
+#endif
 
      goto done;
     }
