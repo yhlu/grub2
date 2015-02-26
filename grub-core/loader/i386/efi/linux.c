@@ -31,12 +31,14 @@ GRUB_MOD_LICENSE ("GPLv3+");
 
 static grub_dl_t my_mod;
 static int loaded;
+static int load_high_enabled;
 static void *kernel_mem;
 static grub_uint64_t kernel_size;
 static grub_uint8_t *initrd_mem;
 static grub_uint32_t handover_offset;
 struct linux_kernel_params *params;
 static char *linux_cmdline;
+static grub_uint64_t load_mem_max = -1UL;
 
 #define BYTES_TO_PAGES(bytes)   (((bytes) + 0xfff) >> 12)
 
@@ -105,6 +107,26 @@ grub_linuxefi_unload (void)
 }
 
 static grub_err_t
+grub_cmd_load_mem_max (grub_command_t cmd __attribute__ ((unused)),
+                 int argc, char *argv[])
+{
+  load_high_enabled = 1;
+
+  if (argc == 0)
+    return 0;
+
+  load_mem_max = grub_strtol(argv[0], NULL, 0);
+
+  if (!load_mem_max)
+    load_high_enabled = 0;
+
+  if (load_mem_max < (1UL<<32))
+    load_mem_max = (1UL<<32);
+
+  return 0;
+}
+
+static grub_err_t
 grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
                  int argc, char *argv[])
 {
@@ -141,10 +163,11 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
       size += ALIGN_UP (grub_file_size (files[i]), 4);
     }
 
-  if (params->version > grub_cpu_to_le16 (0x020b) &&
+  if (load_high_enabled &&
+      params->version > grub_cpu_to_le16 (0x020b) &&
       params->xloadflags & (1<<1)) /* XLF_CAN_BE_LOADED_ABOVE_4G */
     {
-      addr_max = -1UL;
+      addr_max = load_mem_max;
       load_high = 1;
     }
 
@@ -258,10 +281,11 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
       goto fail;
     }
 
-  if (lh.version > grub_cpu_to_le16 (0x020d) &&
+  if (load_high_enabled &&
+      lh.version > grub_cpu_to_le16 (0x020d) &&
       lh.xloadflags & (1<<1)) /* XLF_CAN_BE_LOADED_ABOVE_4G */
     {
-      addr_max = -1UL;
+      addr_max = load_mem_max;
       load_high = 1;
     }
 
@@ -397,10 +421,14 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
-static grub_command_t cmd_linux, cmd_initrd;
+static grub_command_t cmd_linux, cmd_initrd, cmd_load_mem_max;
 
 GRUB_MOD_INIT(linuxefi)
 {
+  cmd_load_mem_max =
+    grub_register_command("loadmemmaxefi", grub_cmd_load_mem_max,
+                          0, N_("Set load_mem_max."));
+
   cmd_linux =
     grub_register_command ("linuxefi", grub_cmd_linux,
                            0, N_("Load Linux."));
@@ -412,6 +440,7 @@ GRUB_MOD_INIT(linuxefi)
 
 GRUB_MOD_FINI(linuxefi)
 {
+  grub_unregister_command (cmd_load_mem_max);
   grub_unregister_command (cmd_linux);
   grub_unregister_command (cmd_initrd);
 }
