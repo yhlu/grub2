@@ -29,6 +29,8 @@
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
+#define DEBUG_PRINT 1
+
 static grub_dl_t my_mod;
 static int loaded;
 static int load_high_enabled;
@@ -189,6 +191,12 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 
   ptr = initrd_mem;
 
+#ifdef DEBUG_PRINT
+  /* before initrd read */
+  grub_printf("initrd: [%lx,%lx]\n",
+              (unsigned long)initrd_mem, (unsigned long)initrd_mem + size - 1);
+#endif
+
   for (i = 0; i < nfiles; i++)
     {
       grub_ssize_t cursize = grub_file_size (files[i]);
@@ -203,6 +211,11 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
       grub_memset (ptr, 0, ALIGN_UP_OVERHEAD (cursize, 4));
       ptr += ALIGN_UP_OVERHEAD (cursize, 4);
     }
+
+#ifdef DEBUG_PRINT
+  /* after initrd read */
+  grub_printf("initrd: read %d file%sdone\n", nfiles, nfiles==1 ? " ": "s ");
+#endif
 
  fail:
   for (i = 0; i < nfiles; i++)
@@ -320,6 +333,11 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   grub_file_close(file);
   file = 0;
 
+#ifdef DEBUG_PRINT
+  /* after kernel read */
+  grub_printf("kernel: read done\n");
+#endif
+
   if (! grub_linuxefi_secure_validate (kernel, filelen))
     {
       grub_error (GRUB_ERR_INVALID_COMMAND, N_("%s has invalid signature"), argv[0]);
@@ -337,6 +355,12 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   memset (params, 0, 16384);
   copy_setup_header((unsigned char *) params, (unsigned char *) &lh);
   params->type_of_loader = 0x21;
+
+#ifdef DEBUG_PRINT
+  /* after params */
+  grub_printf("params: [%lx,%lx]\n",
+              (unsigned long)params, (unsigned long)params + 16384 - 1);
+#endif
 
   linux_cmdline = grub2_efi_allocate_pages_high (addr_max,
 					 BYTES_TO_PAGES(lh.cmdline_size + 1), 4096);
@@ -356,6 +380,12 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   if ( load_high )
     params->ext_cmd_line_ptr = (grub_uint64_t) linux_cmdline >> 32;
 
+#ifdef DEBUG_PRINT
+  /* after cmdline */
+  grub_printf("cmdline: [%lx,%lx]\n", (unsigned long)linux_cmdline,
+	      (unsigned long)linux_cmdline + lh.cmdline_size - 1);
+#endif
+
   handover_offset = lh.handover_offset;
 
   kernel_mem = NULL;
@@ -374,6 +404,12 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
     }
 
   kernel_size = lh.init_size;
+
+#ifdef DEBUG_PRINT
+  /* after kernel alloc */
+  grub_printf("kernel: [%lx,%lx]\n", (unsigned long)kernel_mem,
+              (unsigned long)kernel_mem + lh.init_size - 1);
+#endif
 
   start = (lh.setup_sects + 1) * 512;
   memcpy(kernel_mem, (unsigned char *)kernel + start, filelen - start);
