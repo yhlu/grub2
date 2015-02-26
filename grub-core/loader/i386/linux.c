@@ -227,9 +227,9 @@ allocate_pages (grub_size_t prot_size, grub_size_t *align,
       goto fail;
     }
 
-#ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+#ifndef GRUB_MACHINE_EFI
       grub_uint64_t addr;
 
       /* allocate high at first */
@@ -242,8 +242,17 @@ allocate_pages (grub_size_t prot_size, grub_size_t *align,
 
           return GRUB_ERR_NONE;
          }
-    }
+#else
+       prot_mode_mem = grub2_efi_allocate_pages_high (load_mem_max,
+                                    BYTES_TO_PAGES(prot_size), 1UL<<min_align);
+       if (prot_mode_mem)
+         {
+           prot_mode_target = (grub_uint64_t) prot_mode_mem;
+           *align= min_align;
+           return GRUB_ERR_NONE;
+         }
 #endif
+    }
 
   /* FIXME: Should request low memory from the heap when this feature is
      implemented.  */
@@ -474,6 +483,14 @@ grub_linux_boot_mmap_fill (grub_uint64_t addr, grub_uint64_t size,
 
 #ifndef GRUB_MACHINE_EFI
 #include "linux64_pgt.c"
+#else
+unsigned long __force_order;
+static inline unsigned long read_cr3(void)
+{
+        unsigned long val;
+        asm volatile("mov %%cr3,%0\n\t" : "=r" (val), "=m" (__force_order));
+        return val;
+}
 #endif
 
 static grub_err_t
@@ -483,9 +500,7 @@ grub_linux_boot (void)
   const char *modevar;
   char *tmp;
   struct grub_relocator32_state state;
-#ifndef GRUB_MACHINE_EFI
   struct grub_relocator64_state state64;
-#endif
   void *real_mode_mem = NULL;
   struct grub_linux_boot_ctx ctx = {
     .real_mode_target = 0
@@ -754,9 +769,9 @@ grub_linux_boot (void)
   }
 #endif
 
-#ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+#ifndef GRUB_MACHINE_EFI
       if (real_mode_mem == map_buf)
         {
           grub_uint8_t *p;
@@ -770,13 +785,16 @@ grub_linux_boot (void)
       fill_linux64_pagetable(ctx.real_mode_target, 1<<21);
 
       state64.cr3 = (grub_uint64_t)(grub_uint32_t)level4p;
+#else
+      state64.cr3 = read_cr3();
+#endif
+
       state64.rbx = state64.rsp = 0;
       state64.rsi = ctx.real_mode_target;
 //    state64.rip = (grub_uint64_t)ctx.params->code32_start + ((grub_uint64_t)ctx.params->ext_code32_start << 32) + 0x200; /* 0x200 is offset to startup_64 */
       state64.rip = prot_mode_target + 0x200; /* 0x200 is offset to startup_64 */
       return grub_relocator64_boot (relocator, state64, 0, 0xc0000000);
     }
-#endif
 
   /* FIXME.  */
   /*  asm volatile ("lidt %0" : : "m" (idt_desc)); */
@@ -1187,12 +1205,12 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
       map_2M_page(0);
     }
 
+#endif
+
 #ifdef GRUB_DEBUG_64BIT
   grub_printf ("kernel: [%llx, %llx]\n",
                 (unsigned long long) prot_mode_target,
                 (unsigned long long) (prot_mode_target + prot_init_space - 1));
-#endif
-
 #endif
 
   if (grub_errno == GRUB_ERR_NONE)
@@ -1209,6 +1227,11 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 
   if (grub_errno != GRUB_ERR_NONE)
     {
+
+#ifdef GRUB_MACHINE_64BIT
+      if (prot_mode_target > (1ULL<<32))
+        grub_efi_free_pages(prot_mode_target, BYTES_TO_PAGES(prot_size));
+#endif
       grub_dl_unref (my_mod);
       loaded = 0;
     }
