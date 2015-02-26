@@ -219,7 +219,7 @@ grub_initrd_init (int argc, char *argv[],
   return GRUB_ERR_NONE;
 }
 
-grub_size_t
+grub_off_t
 grub_get_initrd_size (struct grub_linux_initrd_context *initrd_ctx)
 {
   return initrd_ctx->size;
