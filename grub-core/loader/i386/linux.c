@@ -66,7 +66,7 @@ static grub_size_t linux_mem_size;
 static int loaded;
 static int load_high;
 static void *prot_mode_mem;
-static grub_addr_t prot_mode_target;
+static grub_uint64_t prot_mode_target;
 static void *initrd_mem;
 static grub_uint64_t initrd_mem_target;
 static grub_size_t prot_init_space;
@@ -220,6 +220,24 @@ allocate_pages (grub_size_t prot_size, grub_size_t *align,
       err = grub_errno;
       goto fail;
     }
+
+#ifndef GRUB_MACHINE_EFI
+  if (load_high)
+    {
+      grub_uint64_t addr;
+
+      /* allocate high at first */
+      addr = grub_alloc_high((1ULL<<32), -1ULL, prot_size, min_align);
+      if (addr != 0)
+        {
+          prot_mode_mem = NULL;
+          prot_mode_target = addr;
+          *align= min_align;
+
+          return GRUB_ERR_NONE;
+         }
+    }
+#endif
 
   /* FIXME: Should request low memory from the heap when this feature is
      implemented.  */
@@ -448,6 +466,10 @@ grub_linux_boot_mmap_fill (grub_uint64_t addr, grub_uint64_t size,
   return 0;
 }
 
+#ifndef GRUB_MACHINE_EFI
+#include "linux64_pgt.c"
+#endif
+
 static grub_err_t
 grub_linux_boot (void)
 {
@@ -455,6 +477,9 @@ grub_linux_boot (void)
   const char *modevar;
   char *tmp;
   struct grub_relocator32_state state;
+#ifndef GRUB_MACHINE_EFI
+  struct grub_relocator64_state state64;
+#endif
   void *real_mode_mem;
   struct grub_linux_boot_ctx ctx = {
     .real_mode_target = 0
@@ -663,6 +688,20 @@ grub_linux_boot (void)
   }
 #endif
 
+#ifndef GRUB_MACHINE_EFI
+  if (load_high)
+    {
+      fill_linux64_pagetable(prot_mode_target, prot_init_space);
+
+      state64.cr3 = (grub_uint64_t)(grub_uint32_t)level4p;
+      state64.rbx = state64.rsp = 0;
+      state64.rsi = ctx.real_mode_target;
+//    state64.rip = (grub_uint64_t)ctx.params->code32_start + ((grub_uint64_t)ctx.params->ext_code32_start << 32) + 0x200; /* 0x200 is offset to startup_64 */
+      state64.rip = prot_mode_target + 0x200; /* 0x200 is offset to startup_64 */
+      return grub_relocator64_boot (relocator, state64, 0, 0xc0000000);
+    }
+#endif
+
   /* FIXME.  */
   /*  asm volatile ("lidt %0" : : "m" (idt_desc)); */
   state.ebp = state.edi = state.ebx = 0;
@@ -690,7 +729,7 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   struct linux_kernel_header lh;
   grub_uint8_t setup_sects;
   grub_size_t real_size, prot_size, prot_file_size;
-  grub_ssize_t len;
+  grub_int64_t len;
   int i;
   grub_size_t align, min_align;
   int relocatable;
@@ -816,7 +855,11 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   grub_memset (&linux_params, 0, sizeof (linux_params));
   grub_memcpy (&linux_params.setup_sects, &lh.setup_sects, sizeof (lh) - 0x1F1);
 
-  linux_params.code32_start = prot_mode_target + lh.code32_start - GRUB_LINUX_BZIMAGE_ADDR;
+  linux_params.code32_start = (grub_uint32_t) prot_mode_target + lh.code32_start - GRUB_LINUX_BZIMAGE_ADDR;
+#if 0
+  if (load_high)
+    linux_params.ext_code32_start = (grub_uint32_t) ((prot_mode_target + lh.code32_start - GRUB_LINUX_BZIMAGE_ADDR) >> 32);
+#endif
   linux_params.kernel_alignment = (1 << align);
   linux_params.ps_mouse = linux_params.padding10 =  0;
 
@@ -1031,9 +1074,42 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 			      - (sizeof (LINUX_IMAGE) - 1));
 
   len = prot_file_size;
-  if (grub_file_read (file, prot_mode_mem, len) != len && !grub_errno)
-    grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
-		argv[0]);
+  if (prot_mode_mem)
+    {
+      if (grub_file_read (file, prot_mode_mem, len) != len && !grub_errno)
+        grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
+                    argv[0]);
+    }
+#ifndef GRUB_MACHINE_EFI
+  else
+    {
+      grub_uint64_t offset = 0;
+
+      while (len > 0)
+        {
+          grub_uint8_t *p, *ptr;
+          grub_uint64_t size_read = len;
+
+          if (size_read > (1<<21))
+             size_read = 1<<21;
+
+          p = map_buf;
+          map_2M_page(0);
+          if (grub_file_read (file, p, size_read) != (grub_ssize_t)size_read && !grub_errno)
+            {
+              grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"), argv[0]);
+              break;
+            }
+
+          ptr = (grub_uint8_t *)((grub_uint32_t)map_2M_page((prot_mode_target + offset)>>21) + (grub_uint32_t)((prot_mode_target + offset) & ((1<<21) - 1)));
+          memcpy(ptr, p, size_read);
+          offset += size_read;
+
+          len -= size_read;
+        }
+      map_2M_page(0);
+    }
+#endif
 
   if (grub_errno == GRUB_ERR_NONE)
     {
