@@ -412,7 +412,7 @@ grub_linux_setup_video (struct linux_kernel_params *params)
 /* Context for grub_linux_boot.  */
 struct grub_linux_boot_ctx
 {
-  grub_addr_t real_mode_target;
+  grub_uint64_t real_mode_target;
   grub_size_t real_size;
   struct linux_kernel_params *params;
   int e820_num;
@@ -480,7 +480,7 @@ grub_linux_boot (void)
 #ifndef GRUB_MACHINE_EFI
   struct grub_relocator64_state state64;
 #endif
-  void *real_mode_mem;
+  void *real_mode_mem = NULL;
   struct grub_linux_boot_ctx ctx = {
     .real_mode_target = 0
   };
@@ -602,21 +602,68 @@ grub_linux_boot (void)
   grub_dprintf ("linux", "real_size = %x, mmap_size = %x\n",
 		(unsigned) ctx.real_size, (unsigned) mmap_size);
 
+#ifndef GRUB_MACHINE_EFI
+  if (load_high)
+    {
+      if (prot_mode_target > (1ULL<<32) || initrd_mem_target > (1ULL<<32))
+        {
+          grub_uint64_t limit = 0;
+
+          if (prot_mode_target > (1ULL<<32))
+            limit = prot_mode_target;
+          if (initrd_mem_target > (1ULL<<32))
+            {
+              if (!limit)
+                limit = initrd_mem_target;
+              else if (initrd_mem_target < limit)
+                limit = initrd_mem_target;
+            }
+
+           real_mode_mem= NULL;
+           ctx.real_mode_target = grub_alloc_high(1ULL<<32, limit, ctx.real_size, 21);
+         }
+       if (!ctx.real_mode_target)
+         {
+           grub_relocator_chunk_t ch;
+           err = grub_relocator_alloc_chunk_align (relocator, &ch, 0, 0xffffffff,
+                                              ctx.real_size, 4096,
+                                              GRUB_RELOCATOR_PREFERENCE_LOW, 0);
+           if (err)
+             return err;
+           real_mode_mem = get_virtual_current_address (ch);
+           ctx.real_mode_target = get_physical_target_address (ch);
+         }
+     }
+#endif
+
 #ifdef GRUB_MACHINE_EFI
-  grub_efi_mmap_iterate (grub_linux_boot_mmap_find, &ctx, 1);
+  if (! ctx.real_mode_target)
+    grub_efi_mmap_iterate (grub_linux_boot_mmap_find, &ctx, 1);
   if (! ctx.real_mode_target)
     grub_efi_mmap_iterate (grub_linux_boot_mmap_find, &ctx, 0);
 #else
-  grub_mmap_iterate (grub_linux_boot_mmap_find, &ctx);
+  if (! ctx.real_mode_target)
+    grub_mmap_iterate (grub_linux_boot_mmap_find, &ctx);
 #endif
-  grub_dprintf ("linux", "real_mode_target = %lx, real_size = %x, efi_mmap_size = %x\n",
-                (unsigned long) ctx.real_mode_target,
+  grub_dprintf ("linux", "real_mode_target = %llx, real_size = %x, efi_mmap_size = %x\n",
+                (unsigned long long) ctx.real_mode_target,
 		(unsigned) ctx.real_size,
 		(unsigned) efi_mmap_size);
 
   if (! ctx.real_mode_target)
     return grub_error (GRUB_ERR_OUT_OF_MEMORY, "cannot allocate real mode pages");
 
+#ifndef GRUB_MACHINE_EFI
+  if (load_high)
+    {
+       if (!real_mode_mem)
+         {
+           memset(map_buf, 0, ctx.real_size);
+           real_mode_mem = map_buf;
+         }
+    }
+  else
+#endif
   {
     grub_relocator_chunk_t ch;
     err = grub_relocator_alloc_chunk_addr (relocator, &ch,
@@ -634,7 +681,10 @@ grub_linux_boot (void)
   ctx.params = real_mode_mem;
 
   *ctx.params = linux_params;
-  ctx.params->cmd_line_ptr = ctx.real_mode_target + cl_offset;
+  ctx.params->cmd_line_ptr = (grub_uint32_t)(ctx.real_mode_target + cl_offset);
+  if (load_high)
+    ctx.params->ext_cmd_line_ptr = (grub_uint32_t)((ctx.real_mode_target + cl_offset)>>32);
+
   grub_memcpy ((char *) ctx.params + cl_offset, linux_cmdline,
 	       maximal_cmdline_size);
 
@@ -691,7 +741,17 @@ grub_linux_boot (void)
 #ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+      if (real_mode_mem == map_buf)
+        {
+          grub_uint8_t *p;
+
+          p = (grub_uint8_t *)((grub_uint32_t)map_2M_page(ctx.real_mode_target>>21) + (grub_uint32_t)(ctx.real_mode_target & ((1<<21) - 1)));
+          memcpy(p, map_buf, ctx.real_size);
+          map_2M_page(0);
+        }
+
       fill_linux64_pagetable(prot_mode_target, prot_init_space);
+      fill_linux64_pagetable(ctx.real_mode_target, 1<<21);
 
       state64.cr3 = (grub_uint64_t)(grub_uint32_t)level4p;
       state64.rbx = state64.rsp = 0;
