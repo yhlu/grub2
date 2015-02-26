@@ -65,6 +65,7 @@ static grub_dl_t my_mod;
 static grub_size_t linux_mem_size;
 static int loaded;
 static int load_high;
+static int load_high_enabled;
 static void *prot_mode_mem;
 static grub_uint64_t prot_mode_target;
 static void *initrd_mem;
@@ -81,6 +82,7 @@ static grub_efi_uintn_t efi_mmap_size;
 #else
 static const grub_size_t efi_mmap_size = 0;
 #endif
+static grub_uint64_t load_mem_max = -1ULL;
 
 #ifndef GRUB_MACHINE_EFI
 /* 2M aligned buffer */
@@ -227,7 +229,7 @@ allocate_pages (grub_size_t prot_size, grub_size_t *align,
       grub_uint64_t addr;
 
       /* allocate high at first */
-      addr = grub_alloc_high((1ULL<<32), -1ULL, prot_size, min_align);
+      addr = grub_alloc_high((1ULL<<32), load_mem_max, prot_size, min_align);
       if (addr != 0)
         {
           prot_mode_mem = NULL;
@@ -860,7 +862,8 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   if (maximal_cmdline_size < 128)
     maximal_cmdline_size = 128;
 
-  if (grub_le_to_cpu16 (lh.version) > 0x020b
+  if (load_high_enabled
+      && grub_le_to_cpu16 (lh.version) > 0x020b
       && (lh.xloadflags & (1<<1))) /* XLF_CAN_BE_LOADED_ABOVE_4G */
     load_high = 1;
 
@@ -1228,7 +1231,7 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 
       /* allocate high at first */
       if (prot_mode_mem)
-        addr_high = grub_alloc_high(1ULL<<32, -1ULL, size, 21);
+        addr_high = grub_alloc_high(1ULL<<32, load_mem_max, size, 21);
       else if (prot_mode_target > ((1ULL<<32) + size))
         addr_high = grub_alloc_high(1ULL<<32, prot_mode_target, size, 21);
 
@@ -1330,10 +1333,33 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
-static grub_command_t cmd_linux, cmd_initrd;
+static grub_err_t
+grub_cmd_load_mem_max (grub_command_t cmd __attribute__ ((unused)),
+                 int argc, char *argv[])
+{
+  load_high_enabled = 1;
+
+  if (argc == 0)
+      return 0;
+
+  load_mem_max = grub_strtoull(argv[0], NULL, 0);
+
+  if (!load_mem_max)
+    load_high_enabled = 0;
+
+  if (load_mem_max < (1ULL<<32))
+    load_mem_max = 1ULL<<32;
+
+   return 0;
+}
+
+static grub_command_t cmd_linux, cmd_initrd, cmd_load_mem_max;
 
 GRUB_MOD_INIT(linux)
 {
+  cmd_load_mem_max = grub_register_command("loadmemmax",
+                                           grub_cmd_load_mem_max,
+                                           0, N_("Set load_mem_max."));
   cmd_linux = grub_register_command ("linux", grub_cmd_linux,
 				     0, N_("Load Linux."));
   cmd_initrd = grub_register_command ("initrd", grub_cmd_initrd,
@@ -1343,6 +1369,7 @@ GRUB_MOD_INIT(linux)
 
 GRUB_MOD_FINI(linux)
 {
+  grub_unregister_command (cmd_load_mem_max);
   grub_unregister_command (cmd_linux);
   grub_unregister_command (cmd_initrd);
 }
