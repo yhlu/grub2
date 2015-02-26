@@ -64,10 +64,11 @@ static grub_dl_t my_mod;
 
 static grub_size_t linux_mem_size;
 static int loaded;
+static int load_high;
 static void *prot_mode_mem;
 static grub_addr_t prot_mode_target;
 static void *initrd_mem;
-static grub_addr_t initrd_mem_target;
+static grub_uint64_t initrd_mem_target;
 static grub_size_t prot_init_space;
 static grub_uint32_t initrd_pages;
 static struct grub_relocator *relocator = NULL;
@@ -79,6 +80,13 @@ static char *linux_cmdline;
 static grub_efi_uintn_t efi_mmap_size;
 #else
 static const grub_size_t efi_mmap_size = 0;
+#endif
+
+#ifndef GRUB_MACHINE_EFI
+/* 2M aligned buffer */
+static grub_uint8_t map_buf[1<<21] __attribute__ ((aligned(1<<21)));
+#include "linux64_map.c"
+#include "linux64_alloc.c"
 #endif
 
 /* FIXME */
@@ -690,6 +698,8 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 
   grub_dl_ref (my_mod);
 
+  load_high = 0;
+
   if (argc == 0)
     {
       grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
@@ -750,6 +760,10 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 
   if (maximal_cmdline_size < 128)
     maximal_cmdline_size = 128;
+
+  if (grub_le_to_cpu16 (lh.version) > 0x020b
+      && (lh.xloadflags & (1<<1))) /* XLF_CAN_BE_LOADED_ABOVE_4G */
+    load_high = 1;
 
   setup_sects = lh.setup_sects;
 
@@ -1046,7 +1060,7 @@ static grub_err_t
 grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
 		 int argc, char *argv[])
 {
-  grub_size_t size = 0;
+  grub_uint64_t size = 0;
   grub_addr_t addr_min, addr_max;
   grub_addr_t addr;
   grub_err_t err;
@@ -1070,6 +1084,45 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   size = grub_get_initrd_size (&initrd_ctx);
 
   initrd_pages = (page_align (size) >> 12);
+
+#ifndef GRUB_MACHINE_EFI
+  if (load_high)
+    {
+      grub_uint64_t addr_high = 0;
+
+      /* allocate high at first */
+      if (prot_mode_mem)
+        addr_high = grub_alloc_high(1ULL<<32, -1ULL, size, 21);
+      else if (prot_mode_target > ((1ULL<<32) + size))
+        addr_high = grub_alloc_high(1ULL<<32, prot_mode_target, size, 21);
+
+      if (addr_high != 0)
+        {
+          initrd_mem = NULL;
+          initrd_mem_target = addr_high;
+          if (grub_initrd_load_copy (&initrd_ctx, argv, initrd_mem_target,
+                                     map_2M_page, (void *)map_buf))
+            goto fail;
+        }
+      else
+        {
+          grub_relocator_chunk_t ch;
+          err = grub_relocator_alloc_chunk_align (relocator, &ch,
+                                                  0x1000, 0xffffffff, size, 0x1000,
+                                                  GRUB_RELOCATOR_PREFERENCE_HIGH,
+                                                  1);
+          if (err)
+            return err;
+
+          initrd_mem = get_virtual_current_address (ch);
+          initrd_mem_target = get_physical_target_address (ch);
+          if (grub_initrd_load (&initrd_ctx, argv, initrd_mem))
+            goto fail;
+        }
+
+     goto done;
+    }
+#endif
 
   /* Get the highest address available for the initrd.  */
   if (grub_le_to_cpu16 (linux_params.version) >= 0x0203)
@@ -1123,8 +1176,16 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   grub_dprintf ("linux", "Initrd, addr=0x%x, size=0x%x\n",
 		(unsigned) addr, (unsigned) size);
 
-  linux_params.ramdisk_image = initrd_mem_target;
-  linux_params.ramdisk_size = size;
+#ifndef GRUB_MACHINE_EFI
+ done:
+  if (load_high)
+    {
+      linux_params.ext_ramdisk_image = (grub_uint32_t) (initrd_mem_target >> 32);
+      linux_params.ext_ramdisk_size = (grub_uint32_t) (size >> 32);
+    }
+#endif
+  linux_params.ramdisk_image = (grub_uint32_t) initrd_mem_target;
+  linux_params.ramdisk_size = (grub_uint32_t) size;
   linux_params.root_dev = 0x0100; /* XXX */
 
  fail:
