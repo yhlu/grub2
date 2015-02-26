@@ -192,14 +192,27 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
+static void copy_setup_header(unsigned char *param, unsigned char *h)
+{
+	unsigned long setup_header_size = h[0x201] + 0x202 - 0x1f1;
+
+	/* only copy setup_header */
+	if (setup_header_size > 0x7f)
+		setup_header_size = 0x7f;
+	memcpy(param + 0x1f1, h + 0x1f1, setup_header_size);
+}
+
 static grub_err_t
 grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 		int argc, char *argv[])
 {
+  grub_uint64_t addr_max = 0x3fffffff;
+  int load_high = 0;
   grub_file_t file = 0;
   struct linux_kernel_header lh;
-  grub_ssize_t len, start, filelen;
-  void *kernel;
+  grub_ssize_t start, filelen;
+  void *kernel = NULL;
+  int kernel_high = 0;
 
   grub_dl_ref (my_mod);
 
@@ -213,48 +226,11 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   if (! file)
     goto fail;
 
-  filelen = grub_file_size (file);
-
-  kernel = grub_malloc(filelen);
-
-  if (!kernel)
-    {
-      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("cannot allocate kernel buffer"));
-      goto fail;
-    }
-
-  if (grub_file_read (file, kernel, filelen) != filelen)
-    {
-      grub_error (GRUB_ERR_FILE_READ_ERROR, N_("Can't read kernel %s"), argv[0]);
-      goto fail;
-    }
-
-  if (! grub_linuxefi_secure_validate (kernel, filelen))
-    {
-      grub_error (GRUB_ERR_INVALID_COMMAND, N_("%s has invalid signature"), argv[0]);
-      grub_free (kernel);
-      goto fail;
-    }
-
-  grub_file_seek (file, 0);
-
-  grub_free(kernel);
-
-  params = grub_efi_allocate_pages_max (0x3fffffff, BYTES_TO_PAGES(16384));
-
-  if (! params)
-    {
-      grub_error (GRUB_ERR_OUT_OF_MEMORY, "cannot allocate kernel parameters");
-      goto fail;
-    }
-
-  memset (params, 0, 16384);
-
   if (grub_file_read (file, &lh, sizeof (lh)) != sizeof (lh))
     {
       if (!grub_errno)
-	grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
-		    argv[0]);
+        grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
+                    argv[0]);
       goto fail;
     }
 
@@ -282,8 +258,64 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
       goto fail;
     }
 
-  linux_cmdline = grub_efi_allocate_pages_max(0x3fffffff,
-					 BYTES_TO_PAGES(lh.cmdline_size + 1));
+  if (lh.version > grub_cpu_to_le16 (0x020d) &&
+      lh.xloadflags & (1<<1)) /* XLF_CAN_BE_LOADED_ABOVE_4G */
+    {
+      addr_max = -1UL;
+      load_high = 1;
+    }
+
+  filelen = grub_file_size (file);
+
+  kernel = grub_malloc(filelen);
+
+  if (!kernel && !load_high)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("cannot allocate kernel buffer"));
+      goto fail;
+    }
+
+  if (!kernel)
+    {
+      kernel = grub2_efi_allocate_pages_high (addr_max, BYTES_TO_PAGES(filelen), 4096);
+      kernel_high = 1;
+    }
+
+  if (!kernel)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("cannot allocate kernel buffer"));
+      goto fail;
+    }
+
+  grub_file_seek (file, 0);
+  if (grub_file_read (file, kernel, filelen) != filelen)
+    {
+      grub_error (GRUB_ERR_FILE_READ_ERROR, N_("Can't read kernel %s"), argv[0]);
+      goto fail;
+    }
+  grub_file_close(file);
+  file = 0;
+
+  if (! grub_linuxefi_secure_validate (kernel, filelen))
+    {
+      grub_error (GRUB_ERR_INVALID_COMMAND, N_("%s has invalid signature"), argv[0]);
+      goto fail;
+    }
+
+  params = grub2_efi_allocate_pages_high (addr_max, BYTES_TO_PAGES(16384), 4096);
+
+  if (! params)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, "cannot allocate kernel parameters");
+      goto fail;
+    }
+
+  memset (params, 0, 16384);
+  copy_setup_header((unsigned char *) params, (unsigned char *) &lh);
+  params->type_of_loader = 0x21;
+
+  linux_cmdline = grub2_efi_allocate_pages_high (addr_max,
+					 BYTES_TO_PAGES(lh.cmdline_size + 1), 4096);
 
   if (!linux_cmdline)
     {
@@ -296,19 +328,20 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
                               linux_cmdline + sizeof (LINUX_IMAGE) - 1,
 			      lh.cmdline_size - (sizeof (LINUX_IMAGE) - 1));
 
-  lh.cmd_line_ptr = (grub_uint32_t)(grub_uint64_t)linux_cmdline;
+  params->cmd_line_ptr = (grub_uint32_t)(grub_uint64_t) linux_cmdline;
+  if ( load_high )
+    params->ext_cmd_line_ptr = (grub_uint64_t) linux_cmdline >> 32;
 
   handover_offset = lh.handover_offset;
 
-  start = (lh.setup_sects + 1) * 512;
-  len = grub_file_size(file) - start;
-
-  kernel_mem = grub_efi_allocate_pages(lh.pref_address,
+  kernel_mem = NULL;
+  if ( !load_high )
+    kernel_mem = grub_efi_allocate_pages(lh.pref_address,
 				       BYTES_TO_PAGES(lh.init_size));
 
   if (!kernel_mem)
-    kernel_mem = grub_efi_allocate_pages_max(0x3fffffff,
-					     BYTES_TO_PAGES(lh.init_size));
+    kernel_mem = grub2_efi_allocate_pages_high (addr_max,
+				     BYTES_TO_PAGES(lh.init_size), lh.kernel_alignment);
 
   if (!kernel_mem)
     {
@@ -316,31 +349,32 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
       goto fail;
     }
 
-  if (grub_file_seek (file, start) == (grub_off_t) -1)
-    {
-      grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
-		  argv[0]);
-      goto fail;
-    }
+  kernel_size = lh.init_size;
 
-  if (grub_file_read (file, kernel_mem, len) != len && !grub_errno)
-    {
-      grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
-		  argv[0]);
-    }
+  start = (lh.setup_sects + 1) * 512;
+  memcpy(kernel_mem, (unsigned char *)kernel + start, filelen - start);
 
   if (grub_errno == GRUB_ERR_NONE)
     {
       grub_loader_set (grub_linuxefi_boot, grub_linuxefi_unload, 0);
       loaded = 1;
-      lh.code32_start = (grub_uint32_t)(grub_uint64_t) kernel_mem;
+      params->code32_start = (grub_uint32_t)(grub_uint64_t) kernel_mem;
+      if ( load_high )
+        {
+          params->ext_code32_start = (grub_uint64_t) kernel_mem >> 32;
+          /* don't not relocate down in kernel eboot.c::efi_main() */
+          params->pref_address = (grub_uint64_t) kernel_mem;
+        }
     }
 
-  memcpy(params, &lh, 2 * 512);
-
-  params->type_of_loader = 0x21;
-
  fail:
+  if (kernel)
+    {
+      if (!kernel_high)
+        grub_free(kernel);
+      else
+        grub_efi_free_pages((grub_efi_physical_address_t)kernel, BYTES_TO_PAGES(filelen));
+    }
 
   if (file)
     grub_file_close (file);

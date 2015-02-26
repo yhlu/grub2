@@ -140,6 +140,7 @@ struct linux_kernel_header
   grub_uint64_t pref_address;
   grub_uint32_t init_size;
   grub_uint32_t handover_offset;
+  grub_uint32_t ext_code32_start;
 } GRUB_PACKED;
 
 /* Boot parameters for Linux based on 2.6.12. This is used by the setup
@@ -315,7 +316,8 @@ struct linux_kernel_params
   grub_uint64_t pref_address;
   grub_uint32_t init_size;
   grub_uint32_t handover_offset;
-  grub_uint8_t pad2[104];		/* 248 */
+  grub_uint32_t ext_code32_start;
+  grub_uint8_t pad2[100];		/* 24c */
   struct grub_e820_mmap e820_map[(0x400 - 0x2d0) / 20];	/* 2d0 */
 
 } GRUB_PACKED;
