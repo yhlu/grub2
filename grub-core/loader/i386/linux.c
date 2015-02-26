@@ -623,9 +623,9 @@ grub_linux_boot (void)
   grub_dprintf ("linux", "real_size = %x, mmap_size = %x\n",
 		(unsigned) ctx.real_size, (unsigned) mmap_size);
 
-#ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+#ifndef GRUB_MACHINE_EFI
       if (prot_mode_target > (1ULL<<32) || initrd_mem_target > (1ULL<<32))
         {
           grub_uint64_t limit = 0;
@@ -654,6 +654,12 @@ grub_linux_boot (void)
            real_mode_mem = get_virtual_current_address (ch);
            ctx.real_mode_target = get_physical_target_address (ch);
          }
+#else
+       real_mode_mem = grub2_efi_allocate_pages_high (load_mem_max,
+			 BYTES_TO_PAGES(ctx.real_size + efi_mmap_size), 4096);
+       if (real_mode_mem)
+         ctx.real_mode_target = (grub_uint64_t) real_mode_mem;
+#endif
 
 #ifdef GRUB_DEBUG_64BIT
        grub_printf("params: [%llx, %llx]\n",
@@ -665,7 +671,6 @@ grub_linux_boot (void)
              (unsigned long long)ctx.real_mode_target + ctx.real_size - 1);
 #endif
      }
-#endif
 
 #ifdef GRUB_MACHINE_EFI
   if (! ctx.real_mode_target)
@@ -684,17 +689,15 @@ grub_linux_boot (void)
   if (! ctx.real_mode_target)
     return grub_error (GRUB_ERR_OUT_OF_MEMORY, "cannot allocate real mode pages");
 
-#ifndef GRUB_MACHINE_EFI
   if (load_high)
     {
+#ifndef GRUB_MACHINE_EFI
        if (!real_mode_mem)
-         {
-           memset(map_buf, 0, ctx.real_size);
-           real_mode_mem = map_buf;
-         }
+         real_mode_mem = map_buf;
+#endif
+       memset(real_mode_mem, 0, ctx.real_size + efi_mmap_size);
     }
   else
-#endif
   {
     grub_relocator_chunk_t ch;
     err = grub_relocator_alloc_chunk_addr (relocator, &ch,
